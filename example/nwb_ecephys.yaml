@@ -1,0 +1,345 @@
+id: https://w3id.org/nwb/ecephys
+name: nwb-ecephys
+version: 0.0.1
+title: Schema for Extracellular Electrophysiology Data
+description: |-
+  LinkML schema for extracellular electrophysiology data
+license: BSD-3-Clause
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  schema: http://schema.org/
+  UO: http://purl.obolibrary.org/obo/UO_
+  ORCID: https://orcid.org/
+  NCBITaxon: http://purl.obolibrary.org/obo/NCBITaxon_
+
+default_curi_maps:
+  - semweb_context
+default_range: string
+
+imports:
+  - linkml:types
+
+classes:
+
+  NwbObject:
+    description: >-
+      All NWB objects should inherit from this class so that they can be stored in an NWB file,
+      have a unique identifier, and be versioned.
+    abstract: true
+    attributes:
+      id:
+        identifier: true
+        range: string  # should be a UUID-4, e.g., 85bfaa53-0490-4332-abcc-d256a089cd84
+        required: true
+      namespace_version:
+        range: string  # e.g., 2023.08
+        required: true
+      namespace_name:
+        range: string  # e.g., nwb_ecephys
+        required: true
+
+  TimestampSeries:
+    is_a: NwbObject
+    attributes:
+      name:  # the row label
+        key: true  # unique when nested (unlike identifier, which is a global identifier)
+        implements:
+          - linkml:name
+      values_in_s:
+        range: float
+        required: true
+        multivalued: true
+        unit:
+          ucum_code: s
+        array:
+          exact_number_dimensions: "1"  # quote 1 to avoid YAML interpretation as a boolean
+
+  RegularlySampledTimestampSeries:
+    description: >-
+      A 1D array of timestamps, represented efficiently using a sampling rate, starting time,
+      and number of elements (length).
+    is_a: TimestampSeries
+    # TODO: do we want to be able to say that this represents a 1D array? and if so, how? previously used
+    # `implements: NDArray` and `annotations: dimensions: "1"`. there is no "array" attribute here because it is
+    # computed.
+    attributes:
+      sampling_rate_in_Hz:
+        range: float
+        required: true
+        unit:
+          ucum_code: Hz
+      starting_time_in_s:
+        range: float
+        required: true
+        unit:
+          ucum_code: s
+      length:  # must be defined by outer container when it cannot be inferred
+        range: integer
+        implements:
+          - linkml:length
+      values_in_s:  # inherited from TimestampSeries
+        # TODO: technically this is an array, but it is computed from the other attributes
+        # do values need to be provided here since `required: true` and `array: ...` in the parent class?
+        # if so, then we might need to define IrregularlySampledTimestampSeries.
+        equals_expression: "{array_index} / {sampling_rate_in_Hz} + {starting_time_in_s}"
+        # TODO define array_index
+        # equals_expression_per_all: "[i / {sampling_rate_in_Hz} + {starting_time_in_s} for i in range({length})]"
+
+  Electrode:
+    is_a: NwbObject
+    attributes:
+      name:
+        key: true  # unique when nested (unlike identifier, which is a global identifier)
+        implements:
+          - linkml:name
+      impedance_in_Ohm:
+        range: float
+        unit:
+          ucum_code: Ohm
+      # additional attributes...
+
+  # Analogous to HDMF's DynamicTableRegion used to select rows of an Electrodes table.
+  # NOTE: This class may not be necessary. There are no additional attributes besides the values.
+  # ElectrodeRecording.electrode could just be defined as
+  # a multivalued attribute with range Electrode since this need not be an NDArray.
+  # Serialization of this class could be a list of string keys/identifiers of the electrodes.
+  # or alternatively, a list of int indices into the File.electrodes list
+  ElectrodeSeries:
+    is_a: NwbObject
+    description: >-
+      A 1D array of Electrode objects. In the current schema, this is used to represent
+      the second axis of an ElectrodeRecording.
+    implements:
+      - linkml:NDArray
+    attributes:
+      values:
+        range: Electrode
+        multivalued: true
+        required: true
+        # this will be serialized as an array of string keys/identifiers of the electrodes
+        implements:
+          - linkml:elements
+    annotations:
+      dimensions: "1"
+
+  ElectrodeRecordingData:
+    is_a: NwbObject
+    description: >-
+      A 2D array of voltage measurements from electrodes over time.
+      This class is designed to represent either:
+      1) raw data from a data acquisition system in ADC units (ADU),
+          e.g., int16 values that span a range of -32768 to 32767, that need to be converted to volts,
+          e.g., float values from -150 mV to 250 mV, using a conversion factor (e.g., 200/32768)
+          and offset (e.g., 50 mV).
+      2) data that has already been converted to volts.
+      Storage of the raw ADC values is preferred over conversion and then storage in volts
+      to be more efficient and represent the resolution of the original data.
+      See ElectrodeRecording for its usage with axes labels.
+    attributes:
+      per_electrode_conversion_factor:
+        range: float
+        multivalued: true  # length must match range({values}.shape[1])
+        # default value is a list of 1s
+      conversion_factor:
+        range: float
+        # default value is 1
+      offset_in_V:
+        range: float
+        unit:
+          ucum_code: V
+        # default value is 0
+      values:
+        range: float
+        required: true
+        array:
+          exact_number_dimensions: 2
+      values_in_V:
+        range: float
+        required: true
+        unit:
+          ucum_code: V
+        array:
+          exact_number_dimensions: 2
+        equals_expression: "{conversion_factor} * {values} + {offset_in_V}"
+        # equals_expression: "[{per_electrode_conversion_factor}[i] * {values}[:,i] + {offset_in_V}
+        #                     for i in range({values}.shape[1])]""
+      resolution_in_V:
+        # this is useful if the values are stored in volts post-conversion and the original resolution is known
+        # but the conversion factor is not necessarily known. if the conversion factor is known, then this
+        # value should be = 1/conversion_factor.
+        range: float
+        unit:
+          ucum_code: V
+
+  ElectrodeRecordingArray:
+    is_a: NwbObject
+    implements:
+      - linkml:DataArray  # an xarray-compatible object
+    attributes:
+      time_in_s:
+        range: TimestampSeries
+        # NOTE: This container class *could* contain multiple arrays. How do we specify in the containing
+        # DataArray class which array to use? Or do we instead say as we did before that the class itself
+        # represents a 1D array?
+        required: true
+        implements:
+          - linkml:axis  # this is nice to be explicit but not necessary given array_data_mapping
+        inlined: true
+        annotations:
+          axis_index: "0"  # this is nice to be explicit but not necessary given array_data_mapping
+      electrode:
+        range: ElectrodeSeries  # TODO does this need to be an array to work? or can it just be a list?
+        required: true
+        implements:
+          - linkml:axis
+        inlined: true
+        annotations:
+          axis_index: "1"
+      values_in_V:
+        range: ElectrodeRecordingData
+        required: true
+        inlined: true
+        implements:
+          - linkml:array  # this is nice to be explicit but not necessary given array_data_mapping
+    annotations:
+      array_data_mapping:
+        data: values_in_V
+        dims: [time, electrode]  # dims provides names for the dimensions of data
+        coords:  # coords maps arrays in this object to dimensions of data by name (see dims)
+          time_in_s: time
+          electrode: electrode
+
+  Subject:
+    is_a: NwbObject
+    # TODO make abstract - different species have different sex possibilities and species attributes
+    # e.g., c elegans have XO and XX instead of M and F
+    # age and life stage properties are also species-specific
+    attributes:
+      name:
+        range: string
+        required: true
+        aliases:
+          - subject_id
+      sex:
+        range: SubjectSex
+        recommended: true
+      species:
+        range: SubjectSpecies
+        required: true
+
+  Person:  # adapted from NMDC schema
+    description: >-
+      An attribute value representing a person.
+    slots:
+      - orcid
+      - email
+      - name
+    slot_usage:
+      orcid:
+        range: string
+        recommended: true
+        annotations:
+          display_hint: Open Researcher and Contributor ID (ORCID) for this person. See https://orcid.org.
+      email:
+        range: string
+        required: true
+        annotations:
+          display_hint: Email address for this person.
+      name:
+        range: string
+        required: true
+        description: >-
+          The full name of the person.
+          It should follow the format LAST, FIRST [MIDDLE NAME| MIDDLE INITIAL],
+          where MIDDLE NAME| MIDDLE INITIAL is optional.
+        annotations:
+          display_hint: Last name, first name, and middle name or initial of this person.
+        pattern: "^([\\w\\s\\-\\.']+),\\s+([\\w\\s\\-\\.']+)$"
+        examples:
+          - value: Lovelace, Augusta Ada
+          - value: Smith, John
+          - value: Chan, Kong-sang
+          - value: Nyong'o, Lupita A.
+          - value: Armstrong, Florian Cloud de Bounevialle O'Malley
+          - value: García Lorca, Federico
+
+  File:
+    tree_root: true
+    attributes:
+      electrical_data_arrays:
+        range: ElectrodeRecordingArray  # inlined by default
+        multivalued: true
+      electrodes:
+        range: Electrode
+        multivalued: true
+        inlined_as_list: true
+
+  NwbFile:
+    tree_root: true
+    is_a: NwbObject
+    attributes:
+      # this will place all containers in a flat list. the API could provide different views based on modality
+      # or data lifecycle stage.
+      containers:
+        multivalued: true
+        inlined_as_list: true
+        range: NwbObject
+      session_start_time:
+        range: datetime  # TODO: change to dateordatetime but this range is not fully implemented
+      experimenters:
+        range: Person
+        multivalued: true
+        inlined_as_list: true
+
+slots:
+
+  orcid:
+    description: >-
+      Open Researcher and Contributor ID (ORCID) for a person. See https://orcid.org.
+      Specify in CURIE format. E.g., ORCID:0000-1111-2222-3333
+    domain: PersonValue  # TODO why specify a domain?
+    range: uriorcurie  # TODO is this sufficient to validate that this is an ORCID curie?
+    pattern: "\\d{4}-\\d{4}-\\d{4}-(\\d{3}X|\\d{4})"
+    id_prefixes:
+      - ORCID
+    examples:
+      - value: ORCID:0000-0001-5697-4881
+    see_also:
+      - https://orcid.org
+
+  email:
+    description: >-
+      An email address for an entity such as a person.
+      This should be the primary email address used.
+    range: string
+    slot_uri: schema:email
+    pattern: "\\S+@\\S+{\\.\\w}+"
+
+  name:
+    description: >-
+      The name of an entity such as a person or object.
+    range: string
+    slot_uri: schema:name
+
+
+enums:
+  SubjectSex:
+    permissible_values:
+      MALE:
+      FEMALE:
+      UNKNOWN:
+      OTHER:
+  SubjectSpecies:
+    permissible_values:
+      HOMO SAPIENS:
+        description: human
+        aliases:
+          - human
+        meaning: NCBITaxon:9606
+      MUS MUSCULUS:
+        description: mouse
+        aliases:
+          - mouse
+          - house mouse
+        meaning: NCBITaxon:10090
