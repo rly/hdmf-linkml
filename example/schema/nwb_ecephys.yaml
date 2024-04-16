@@ -54,7 +54,7 @@ classes:
         unit:
           ucum_code: s
         array:
-          exact_number_dimensions: "1"  # quote 1 to avoid YAML interpretation as a boolean
+          exact_number_dimensions: 1
 
   RegularlySampledTimestampSeries:
     description: >-
