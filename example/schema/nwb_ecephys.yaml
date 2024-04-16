@@ -41,6 +41,8 @@ classes:
 
   TimestampSeries:
     is_a: NwbObject
+    implements:
+      - linkml:Array
     attributes:
       name:  # the row label
         key: true  # unique when nested (unlike identifier, which is a global identifier)
@@ -49,7 +51,6 @@ classes:
       values_in_s:
         range: float
         required: true
-        multivalued: true
         unit:
           ucum_code: s
         array:
@@ -60,9 +61,6 @@ classes:
       A 1D array of timestamps, represented efficiently using a sampling rate, starting time,
       and number of elements (length).
     is_a: TimestampSeries
-    # TODO: do we want to be able to say that this represents a 1D array? and if so, how? previously used
-    # `implements: NDArray` and `annotations: dimensions: "1"`. there is no "array" attribute here because it is
-    # computed.
     attributes:
       sampling_rate_in_Hz:
         range: float
@@ -78,13 +76,15 @@ classes:
         range: integer
         implements:
           - linkml:length
-      values_in_s:  # inherited from TimestampSeries
-        # TODO: technically this is an array, but it is computed from the other attributes
-        # do values need to be provided here since `required: true` and `array: ...` in the parent class?
+      values_in_s:
+        # this extends the `values_in_s` in TimestampSeries to be a computed attribute using `equals_expression`
+        # TODO: technically this is an array, but it is computed from the other attributes.
+        # do values need to be provided here because `required: true` and `array: ...` is in the parent class?
         # if so, then we might need to define IrregularlySampledTimestampSeries.
         equals_expression: "{array_index} / {sampling_rate_in_Hz} + {starting_time_in_s}"
-        # TODO define array_index
-        # equals_expression_per_all: "[i / {sampling_rate_in_Hz} + {starting_time_in_s} for i in range({length})]"
+        # TODO LinkML needs to allow list comprehension (or similar) in `equals_expression`
+        # https://github.com/linkml/linkml/issues/2067
+        # equals_expression_: "[i / {sampling_rate_in_Hz} + {starting_time_in_s} for i in range({length})]"
 
   Electrode:
     is_a: NwbObject
@@ -97,34 +97,35 @@ classes:
         range: float
         unit:
           ucum_code: Ohm
-      # additional attributes...
 
   # Analogous to HDMF's DynamicTableRegion used to select rows of an Electrodes table.
   # NOTE: This class may not be necessary. There are no additional attributes besides the values.
-  # ElectrodeRecording.electrode could just be defined as
+  # ElectrodeRecordingArray.electrode could just be defined as
   # a multivalued attribute with range Electrode since this need not be an NDArray.
   # Serialization of this class could be a list of string keys/identifiers of the electrodes.
-  # or alternatively, a list of int indices into the File.electrodes list
+  # or alternatively, a list of int indices into the File.electrodes list.
+  # The benefit of this class is that the object could be stored in a separate place and referenced
+  # by key/identifier in multiple ElectrodeRecordingArray objects. If it is defined inline without
+  # a separate class, then the ElectrodeRecordingArray objects would need to be duplicated.
   ElectrodeSeries:
     is_a: NwbObject
     description: >-
       A 1D array of Electrode objects. In the current schema, this is used to represent
       the second axis of an ElectrodeRecording.
     implements:
-      - linkml:NDArray
+      - linkml:Array
     attributes:
       values:
         range: Electrode
-        multivalued: true
         required: true
         # this will be serialized as an array of string keys/identifiers of the electrodes
-        implements:
-          - linkml:elements
-    annotations:
-      dimensions: "1"
+        array:
+          exact_number_dimensions: 1
 
   ElectrodeRecordingData:
     is_a: NwbObject
+    implements:
+      - linkml:Array
     description: >-
       A 2D array of voltage measurements from electrodes over time.
       This class is designed to represent either:
@@ -149,11 +150,13 @@ classes:
         unit:
           ucum_code: V
         # default value is 0
-      values:
+      raw_values:
         range: float
         required: true
         array:
           exact_number_dimensions: 2
+      # complex case: there are two arrays in this class, and one is derived from the other
+      # the equals_expression does not yet work
       values_in_V:
         range: float
         required: true
@@ -161,9 +164,8 @@ classes:
           ucum_code: V
         array:
           exact_number_dimensions: 2
-        equals_expression: "{conversion_factor} * {values} + {offset_in_V}"
-        # equals_expression: "[{per_electrode_conversion_factor}[i] * {values}[:,i] + {offset_in_V}
-        #                     for i in range({values}.shape[1])]""
+        equals_expression: "[{per_electrode_conversion_factor}[i] * {conversion_factor} * {values}[:,i] + {offset_in_V}
+                            for i in range({values}.shape[1])]"
       resolution_in_V:
         # this is useful if the values are stored in volts post-conversion and the original resolution is known
         # but the conversion factor is not necessarily known. if the conversion factor is known, then this
@@ -179,36 +181,27 @@ classes:
     attributes:
       time_in_s:
         range: TimestampSeries
-        # NOTE: This container class *could* contain multiple arrays. How do we specify in the containing
-        # DataArray class which array to use? Or do we instead say as we did before that the class itself
-        # represents a 1D array?
         required: true
-        implements:
-          - linkml:axis  # this is nice to be explicit but not necessary given array_data_mapping
-        inlined: true
-        annotations:
-          axis_index: "0"  # this is nice to be explicit but not necessary given array_data_mapping
+        inlined: true  # can we allow either inline or reference?
       electrode:
-        range: ElectrodeSeries  # TODO does this need to be an array to work? or can it just be a list?
+        range: ElectrodeSeries
         required: true
-        implements:
-          - linkml:axis
         inlined: true
-        annotations:
-          axis_index: "1"
       values_in_V:
         range: ElectrodeRecordingData
         required: true
         inlined: true
-        implements:
-          - linkml:array  # this is nice to be explicit but not necessary given array_data_mapping
-    annotations:
-      array_data_mapping:
-        data: values_in_V
-        dims: [time, electrode]  # dims provides names for the dimensions of data
-        coords:  # coords maps arrays in this object to dimensions of data by name (see dims)
-          time_in_s: time
-          electrode: electrode
+        array:  # add these properties to the array attribute within the ElectrodeRecordingData class
+          dimensions:
+            - alias: t
+            - alias: electrode
+          indexed_by:
+            - alias: t
+              index_slot: time_in_s
+              index_dims: [t]  # reference to a dimension alias or index
+            - alias: electrode
+              index_slot: electrode
+              index_dims: [electrode]
 
   Subject:
     is_a: NwbObject
@@ -228,7 +221,7 @@ classes:
         range: SubjectSpecies
         required: true
 
-  Person:  # adapted from NMDC schema
+  Person:
     description: >-
       An attribute value representing a person.
     slots:
@@ -267,7 +260,7 @@ classes:
   File:
     tree_root: true
     attributes:
-      electrical_data_arrays:
+      electrode_recording_arrays:
         range: ElectrodeRecordingArray  # inlined by default
         multivalued: true
       electrodes:
